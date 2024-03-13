@@ -1,0 +1,6 @@
+.vs
+out
+bin/*.ilk
+bin/*.pdb
+bin/*.exe
+lib
