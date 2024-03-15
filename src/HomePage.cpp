@@ -1,5 +1,32 @@
 #include "HomePage.h"
 #include "Utils.h"
+#include <wx/hyperlink.h>
+
+class HomePageAboutPanel : public wxPanel {
+public:
+	HomePageAboutPanel(wxWindow* parent) : wxPanel(parent) {
+		wxSizer* mainSizer = new wxBoxSizer(wxHORIZONTAL);
+
+		SetFont(GetFont().Scale(0.7));
+		auto* appCopyrightText = new wxStaticText(this, wxID_ANY, L"Copyright (C) 2024 V\x169 T\xF9ng L\xE2m. ");
+		{
+			appCopyrightText->SetForegroundColour(wxColor(70, 70, 70));
+		}
+
+		auto* aboutLink = new wxHyperlinkCtrl(this, wxID_ANY, "More information", "https://github.com/laam-egg/glancer");
+		{
+			aboutLink->SetForegroundColour(wxColor(70, 70, 70));
+		}
+
+		{
+			{
+				mainSizer->Add(appCopyrightText, 0);
+				mainSizer->Add(aboutLink, 0);
+			}
+			SetSizerAndFit(mainSizer);
+		}
+	}
+};
 
 class HomePageButtonPanel : public wxPanel {
 public:
@@ -22,19 +49,10 @@ public:
 			takeScreenshotButton->SetBitmap(wxBitmap(takeScreenshotIcon));
 		}
 
-		wxButton* aboutButton = new wxButton(this, wxID_ANY, "About...");
-		{
-			wxImage aboutIcon;
-			wxString path = Utils::getMainDir() + "/images/about.png";
-			aboutIcon.LoadFile(path);
-			aboutButton->SetBitmap(wxBitmap(aboutIcon));
-		}
-
 		{
 			{
 				mainSizer->Add(openLocalImageButton, 1, wxALIGN_LEFT | wxEXPAND);
 				mainSizer->Add(takeScreenshotButton, 1, wxALIGN_LEFT | wxEXPAND);
-				mainSizer->Add(aboutButton, 1, wxALIGN_LEFT | wxEXPAND);
 			}
 			SetSizerAndFit(mainSizer);
 		}
@@ -65,6 +83,7 @@ HomePage::HomePage(wxWindow* parent) : BasePanel(parent) {
 			mainSizer->AddSpacer(15);
 			mainSizer->Add(new HomePageButtonPanel(this), 0, wxALIGN_CENTER);
 			mainSizer->AddStretchSpacer();
+			mainSizer->Add(new HomePageAboutPanel(this), 0, wxALIGN_LEFT);
 		}
 		SetSizerAndFit(mainSizer);
 	}
