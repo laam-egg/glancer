@@ -132,14 +132,14 @@ public:
 
 class RealImagePanel final : public BasePanel {
 private:
-	wxImage m_image;
+	wxMemoryDC m_imageDC;
 	ImageZoomer m_iz;
 	double m_accumulatedMouseWheelRotation;
 
 public:
 	RealImagePanel(wxWindow* parent, wxImage const& image)
 		: BasePanel(parent),
-		m_image{ image },
+		m_imageDC(wxBitmap(image)),
 		m_iz(image.GetWidth(), image.GetHeight()),
 		m_accumulatedMouseWheelRotation{ 0.0 }
 	{
@@ -170,20 +170,21 @@ public:
 		dc.Clear();
 
 		m_iz.adapt(GetSize());
-		int newImageWidth = m_iz.getCurrentSize().GetWidth();
-		int newImageHeight = m_iz.getCurrentSize().GetHeight();
+		wxCoord newImageWidth{ m_iz.getCurrentSize().GetWidth() };
+		wxCoord newImageHeight{ m_iz.getCurrentSize().GetHeight() };
 
-		wxImage scaledImage = m_image.Scale(
-			newImageWidth,
-			newImageHeight
-		);
-		wxBitmap bitmap(scaledImage, dc);
-
-		dc.DrawBitmap(bitmap, wxPoint(
+		dc.StretchBlit(
 			// Center the image on screen
-			(GetSize().GetWidth() - newImageWidth) / 2,
-			(GetSize().GetHeight() - newImageHeight) / 2
-		));
+			wxCoord{ (GetSize().GetWidth() - newImageWidth) / 2 },
+			wxCoord{ (GetSize().GetHeight() - newImageHeight) / 2 },
+			newImageWidth,
+			newImageHeight,
+			&m_imageDC,
+			wxCoord{ 0 },
+			wxCoord{ 0 },
+			wxCoord{ m_imageDC.GetSize().GetWidth() },
+			wxCoord{ m_imageDC.GetSize().GetHeight() }
+		);
 	}
 
 	void onMouseWheel(wxMouseEvent& event) {
