@@ -39,28 +39,33 @@ public:
 	}
 };
 
-class RealImagePanel final : public BasePanel {
+class ImageZoomer {
 private:
-	wxImage m_image;
-	wxSize m_desiredSize;
-	double m_imageWidthPerHeightRatio;
+	bool m_auto;
+	int const m_imageWidth, m_imageHeight;
+	double const m_imageWidthPerHeightRatio;
 	double m_imageSizePerWindowSizeRatio;
+	wxSize m_minWindowSize;
+	wxSize m_minImageSize;
+	wxSize m_desiredWindowSize;
+	wxSize m_currentSize;
 
 public:
-	RealImagePanel(wxWindow* parent, wxImage const& image) : BasePanel(parent), m_image{ image } {
-		Bind(wxEVT_PAINT, &RealImagePanel::onPaintEvent, this);
-		Bind(wxEVT_SIZE, &RealImagePanel::onResizeEvent, this);
-
-		m_imageWidthPerHeightRatio = 1.0 * image.GetWidth() / image.GetHeight();
+	ImageZoomer(int imageWidth, int imageHeight, bool automatic = true)
+		: m_auto{ automatic },
+		m_imageWidth{ imageWidth },
+		m_imageHeight{ imageHeight },
+		m_imageWidthPerHeightRatio{ 1.0 * m_imageWidth / m_imageHeight }
+	{
 		int const minWidth = 200; // the window should not be too small !
 		int const minHeight = minWidth / m_imageWidthPerHeightRatio;
 
 		int desiredWidth = wxMax(
-			wxMin(image.GetWidth(), int(wxDisplay().GetGeometry().GetWidth() * 0.7)),
+			wxMin(m_imageWidth, int(wxDisplay().GetGeometry().GetWidth() * 0.7)),
 			minWidth
 		);
 		int desiredHeight = wxMax(
-			wxMin(image.GetHeight(), int(wxDisplay().GetGeometry().GetHeight()) * 0.8),
+			wxMin(m_imageHeight, int(wxDisplay().GetGeometry().GetHeight()) * 0.8),
 			minHeight
 		);
 
@@ -72,13 +77,81 @@ public:
 			desiredWidth = desiredHeight * m_imageWidthPerHeightRatio;
 		}
 
-		m_imageSizePerWindowSizeRatio = 1.0 * image.GetWidth() / desiredWidth;
-		SetMinSize(wxSize(minWidth, minHeight));
-		m_desiredSize = wxSize(desiredWidth, desiredHeight);
+		m_imageSizePerWindowSizeRatio = 1.0 * m_imageWidth / desiredWidth;
+		m_minWindowSize = wxSize(minWidth, minHeight);
+		m_minImageSize = wxSize(minWidth * m_imageSizePerWindowSizeRatio, minHeight * m_imageSizePerWindowSizeRatio);
+		m_desiredWindowSize = wxSize(desiredWidth, desiredHeight);
+		m_currentSize = m_desiredWindowSize;
+	}
+
+	wxSize getMinWindowSize() const {
+		return m_minWindowSize;
+	}
+
+	wxSize getWindowDesiredSize() const {
+		return m_desiredWindowSize;
+	}
+
+	wxSize getCurrentSize() const {
+		return m_currentSize;
+	}
+
+	void adapt(wxSize const& newWindowSize) {
+		if (!m_auto) return;
+
+		int newImageWidth = m_imageSizePerWindowSizeRatio * newWindowSize.GetWidth();
+		int newImageHeight = newImageWidth / m_imageWidthPerHeightRatio;
+		if (newImageHeight > newWindowSize.GetHeight()) {
+			newImageHeight = newWindowSize.GetHeight();
+			newImageWidth = newImageHeight * m_imageWidthPerHeightRatio;
+		}
+		if (newImageWidth > newWindowSize.GetWidth()) {
+			newImageWidth = newWindowSize.GetWidth();
+			newImageHeight = newImageWidth / m_imageWidthPerHeightRatio;
+		}
+
+		m_currentSize = { newImageWidth, newImageHeight };
+	}
+
+	void zoomBy(int numZoomSteps) {
+		double const zoomPercentagePerStep = 0.05;
+		m_auto = false;
+		double factor = 1.0;
+		if (numZoomSteps > 0) {
+			factor = 1 + numZoomSteps * zoomPercentagePerStep;
+		}
+		else if (numZoomSteps < 0) {
+			factor = 1 + numZoomSteps * zoomPercentagePerStep;
+		}
+
+		int newWidth = wxMax(m_currentSize.GetWidth() * factor, m_minImageSize.GetWidth());
+		int newHeight = wxMax(m_currentSize.GetHeight() * factor, m_minImageSize.GetHeight());
+		m_currentSize = { newWidth, newHeight };
+	}
+};
+
+class RealImagePanel final : public BasePanel {
+private:
+	wxImage m_image;
+	ImageZoomer m_iz;
+	double m_accumulatedMouseWheelRotation;
+
+public:
+	RealImagePanel(wxWindow* parent, wxImage const& image)
+		: BasePanel(parent),
+		m_image{ image },
+		m_iz(image.GetWidth(), image.GetHeight()),
+		m_accumulatedMouseWheelRotation{ 0.0 }
+	{
+		Bind(wxEVT_PAINT, &RealImagePanel::onPaintEvent, this);
+		Bind(wxEVT_SIZE, &RealImagePanel::onResizeEvent, this);
+		Bind(wxEVT_MOUSEWHEEL, &RealImagePanel::onMouseWheel, this);
+
+		SetMinSize(m_iz.getMinWindowSize());
 	}
 
 	virtual void adjustDesiredSize() override {
-		ClientAreaResizeEvent e(m_desiredSize);
+		ClientAreaResizeEvent e(m_iz.getWindowDesiredSize());
 		wxPostEvent(this, e);
 	}
 
@@ -95,16 +168,10 @@ public:
 
 	void render(wxDC& dc) {
 		dc.Clear();
-		int newImageWidth = m_imageSizePerWindowSizeRatio * GetSize().GetWidth();
-		int newImageHeight = newImageWidth / m_imageWidthPerHeightRatio;
-		if (newImageHeight > GetSize().GetHeight()) {
-			newImageHeight = GetSize().GetHeight();
-			newImageWidth = newImageHeight * m_imageWidthPerHeightRatio;
-		}
-		if (newImageWidth > GetSize().GetWidth()) {
-			newImageWidth = GetSize().GetWidth();
-			newImageHeight = newImageWidth / m_imageWidthPerHeightRatio;
-		}
+
+		m_iz.adapt(GetSize());
+		int newImageWidth = m_iz.getCurrentSize().GetWidth();
+		int newImageHeight = m_iz.getCurrentSize().GetHeight();
 
 		wxImage scaledImage = m_image.Scale(
 			newImageWidth,
@@ -117,6 +184,16 @@ public:
 			(GetSize().GetWidth() - newImageWidth) / 2,
 			(GetSize().GetHeight() - newImageHeight) / 2
 		));
+	}
+
+	void onMouseWheel(wxMouseEvent& event) {
+		if (event.ControlDown()) {
+			int numZoomSteps = abs(event.GetWheelRotation()) / event.GetWheelRotation();
+			m_iz.zoomBy(numZoomSteps);
+			Refresh(false);
+			return;
+		}
+		event.Skip();
 	}
 };
 
