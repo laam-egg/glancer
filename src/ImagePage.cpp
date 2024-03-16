@@ -39,9 +39,11 @@ public:
 	}
 };
 
+static float const MAX_ZOOM_FACTOR = 5.0f; // 500%
 class ImageZoomer {
 private:
-	bool m_auto;
+	bool m_autoSizing;
+
 	int const m_imageWidth, m_imageHeight;
 	double const m_imageWidthPerHeightRatio;
 	double m_imageSizePerWindowSizeRatio;
@@ -50,12 +52,16 @@ private:
 	wxSize m_desiredWindowSize;
 	wxSize m_currentSize;
 
+	wxPoint m_currentPosition;
+	wxPoint m_currentPositionDelta;
+
 public:
-	ImageZoomer(int imageWidth, int imageHeight, bool automatic = true)
-		: m_auto{ automatic },
+	ImageZoomer(int imageWidth, int imageHeight)
+		: m_autoSizing{ true },
 		m_imageWidth{ imageWidth },
 		m_imageHeight{ imageHeight },
-		m_imageWidthPerHeightRatio{ 1.0 * m_imageWidth / m_imageHeight }
+		m_imageWidthPerHeightRatio{ 1.0 * m_imageWidth / m_imageHeight },
+		m_currentPositionDelta{ 0, 0 }
 	{
 		int const minWidth = 200; // the window should not be too small !
 		int const minHeight = minWidth / m_imageWidthPerHeightRatio;
@@ -82,6 +88,8 @@ public:
 		m_minImageSize = wxSize(minWidth * m_imageSizePerWindowSizeRatio, minHeight * m_imageSizePerWindowSizeRatio);
 		m_desiredWindowSize = wxSize(desiredWidth, desiredHeight);
 		m_currentSize = m_desiredWindowSize;
+
+		m_currentPosition = { 0, 0 };
 	}
 
 	wxSize getMinWindowSize() const {
@@ -96,26 +104,35 @@ public:
 		return m_currentSize;
 	}
 
+	wxPoint getCurrentPosition() const {
+		return m_currentPosition;
+	}
+
 	void adapt(wxSize const& newWindowSize) {
-		if (!m_auto) return;
+		if (m_autoSizing) {
+			int newImageWidth = m_imageSizePerWindowSizeRatio * newWindowSize.GetWidth();
+			int newImageHeight = newImageWidth / m_imageWidthPerHeightRatio;
+			if (newImageHeight > newWindowSize.GetHeight()) {
+				newImageHeight = newWindowSize.GetHeight();
+				newImageWidth = newImageHeight * m_imageWidthPerHeightRatio;
+			}
+			if (newImageWidth > newWindowSize.GetWidth()) {
+				newImageWidth = newWindowSize.GetWidth();
+				newImageHeight = newImageWidth / m_imageWidthPerHeightRatio;
+			}
 
-		int newImageWidth = m_imageSizePerWindowSizeRatio * newWindowSize.GetWidth();
-		int newImageHeight = newImageWidth / m_imageWidthPerHeightRatio;
-		if (newImageHeight > newWindowSize.GetHeight()) {
-			newImageHeight = newWindowSize.GetHeight();
-			newImageWidth = newImageHeight * m_imageWidthPerHeightRatio;
+			m_currentSize = { newImageWidth, newImageHeight };
 		}
-		if (newImageWidth > newWindowSize.GetWidth()) {
-			newImageWidth = newWindowSize.GetWidth();
-			newImageHeight = newImageWidth / m_imageWidthPerHeightRatio;
-		}
-
-		m_currentSize = { newImageWidth, newImageHeight };
+		m_currentPosition = {
+			wxCoord{ (newWindowSize.GetWidth() - m_currentSize.GetWidth()) / 2 + m_currentPositionDelta.x },
+			wxCoord{ (newWindowSize.GetHeight() - m_currentSize.GetHeight()) / 2 + m_currentPositionDelta.y },
+		};
 	}
 
 	void zoomBy(int numZoomSteps) {
+		m_autoSizing = false;
+
 		double const zoomPercentagePerStep = 0.05;
-		m_auto = false;
 		double factor = 1.0;
 		if (numZoomSteps > 0) {
 			factor = 1 + numZoomSteps * zoomPercentagePerStep;
@@ -126,26 +143,128 @@ public:
 
 		int newWidth = wxMax(m_currentSize.GetWidth() * factor, m_minImageSize.GetWidth());
 		int newHeight = wxMax(m_currentSize.GetHeight() * factor, m_minImageSize.GetHeight());
+
+		float currentZoomFactor = 1.0f * newHeight / m_imageHeight;
+		if (currentZoomFactor > MAX_ZOOM_FACTOR) {
+			currentZoomFactor = MAX_ZOOM_FACTOR;
+			newWidth = m_imageWidth * currentZoomFactor;
+			newHeight = m_imageHeight * currentZoomFactor;
+		}
+
 		m_currentSize = { newWidth, newHeight };
 	}
+
+	void move(wxPoint const& mouseMoveDelta, wxSize const& windowSize) {
+		m_currentPositionDelta += mouseMoveDelta;
+		adapt(windowSize);
+	}
+
+	int getCurrentZoomFactorByPercentage() const {
+		return int(1.0f * m_currentSize.GetHeight() / m_imageHeight * 100);
+	}
 };
+
+wxDEFINE_EVENT(MOUSE_DRAG_BEGIN_EVENT, wxCommandEvent);
+wxDEFINE_EVENT(MOUSE_DRAG_END_EVENT, wxCommandEvent);
+
+class MouseDragEvent;
+wxDECLARE_EVENT(MOUSE_DRAG_EVENT, MouseDragEvent);
+class MouseDragEvent : public wxCommandEvent {
+private:
+	wxPoint m_delta;
+public:
+	MouseDragEvent(wxPoint delta) : wxCommandEvent(MOUSE_DRAG_EVENT), m_delta{ delta } {
+	}
+
+	MouseDragEvent(MouseDragEvent const& other) : wxCommandEvent(other) {
+		this->SetDelta(other.GetDelta());
+	}
+
+	virtual wxEvent* Clone() const override {
+		return new MouseDragEvent(*this);
+	}
+
+	void SetDelta(wxPoint const& newDelta) {
+		m_delta = newDelta;
+	}
+
+	wxPoint const& GetDelta() const {
+		return m_delta;
+	}
+};
+wxDEFINE_EVENT(MOUSE_DRAG_EVENT, MouseDragEvent);
+
+class MouseDragDetector {
+private:
+	wxPoint m_lastPos;
+	bool m_dragging;
+	wxWindow* const m_parent;
+
+public:
+	MouseDragDetector(wxWindow* parent)
+		: m_parent{ parent },
+		m_lastPos{ 0, 0 },
+		m_dragging{ false }
+	{}
+
+	void handleMouseMove(wxMouseEvent& event) {
+		if (event.Dragging() && event.LeftIsDown()) {
+			if (m_dragging) {
+				wxPoint delta = event.GetPosition() - m_lastPos;
+				m_lastPos = event.GetPosition();
+				MouseDragEvent e(delta);
+				wxPostEvent(m_parent, e);
+			}
+			else {
+				m_dragging = true;
+				m_lastPos = event.GetPosition();
+				wxCommandEvent e(MOUSE_DRAG_BEGIN_EVENT);
+				wxPostEvent(m_parent, e);
+			}
+		}
+		else {
+			undrag();
+		}
+	}
+
+	void handleMouseLeftUp(wxMouseEvent& event) {
+		undrag();
+	}
+
+private:
+	void undrag() {
+		if (m_dragging) {
+			m_dragging = false;
+			wxCommandEvent e(MOUSE_DRAG_END_EVENT);
+			wxPostEvent(m_parent, e);
+		}
+	}
+};
+
+wxDEFINE_EVENT(ZOOM_FACTOR_CHANGED, wxCommandEvent);
 
 class RealImagePanel final : public BasePanel {
 private:
 	wxMemoryDC m_imageDC;
 	ImageZoomer m_iz;
-	double m_accumulatedMouseWheelRotation;
+	MouseDragDetector m_mouseDragDetector;
 
 public:
 	RealImagePanel(wxWindow* parent, wxImage const& image)
 		: BasePanel(parent),
 		m_imageDC(wxBitmap(image)),
 		m_iz(image.GetWidth(), image.GetHeight()),
-		m_accumulatedMouseWheelRotation{ 0.0 }
+		m_mouseDragDetector(this)
 	{
 		Bind(wxEVT_PAINT, &RealImagePanel::onPaintEvent, this);
 		Bind(wxEVT_SIZE, &RealImagePanel::onResizeEvent, this);
 		Bind(wxEVT_MOUSEWHEEL, &RealImagePanel::onMouseWheel, this);
+		Bind(wxEVT_MOTION, &RealImagePanel::onMouseMove, this);
+		Bind(wxEVT_LEFT_UP, &RealImagePanel::onMouseLeftUp, this);
+		
+		Bind(MOUSE_DRAG_EVENT, &RealImagePanel::onMouseDrag, this);
+		Bind(MOUSE_DRAG_BEGIN_EVENT, &RealImagePanel::onMouseDragBegin, this);
+		Bind(MOUSE_DRAG_END_EVENT, &RealImagePanel::onMouseDragEnd, this);
 
 		SetMinSize(m_iz.getMinWindowSize());
 	}
@@ -173,10 +292,13 @@ public:
 		wxCoord newImageWidth{ m_iz.getCurrentSize().GetWidth() };
 		wxCoord newImageHeight{ m_iz.getCurrentSize().GetHeight() };
 
+		wxCommandEvent e(ZOOM_FACTOR_CHANGED);
+		e.SetInt(m_iz.getCurrentZoomFactorByPercentage());
+		wxPostEvent(this, e);
+
 		dc.StretchBlit(
-			// Center the image on screen
-			wxCoord{ (GetSize().GetWidth() - newImageWidth) / 2 },
-			wxCoord{ (GetSize().GetHeight() - newImageHeight) / 2 },
+			m_iz.getCurrentPosition().x,
+			m_iz.getCurrentPosition().y,
 			newImageWidth,
 			newImageHeight,
 			&m_imageDC,
@@ -196,6 +318,27 @@ public:
 		}
 		event.Skip();
 	}
+
+	void onMouseMove(wxMouseEvent& event) {
+		m_mouseDragDetector.handleMouseMove(event);
+	}
+
+	void onMouseLeftUp(wxMouseEvent& event) {
+		m_mouseDragDetector.handleMouseLeftUp(event);
+	}
+
+	void onMouseDrag(MouseDragEvent& event) {
+		m_iz.move(event.GetDelta(), GetSize());
+		Refresh(false);
+	}
+
+	void onMouseDragBegin(wxCommandEvent& event) {
+		SetCursor(wxCURSOR_HAND);
+	}
+
+	void onMouseDragEnd(wxCommandEvent& event) {
+		SetCursor(wxCURSOR_ARROW);
+	}
 };
 
 BasePanel* ImagePage::initializeMainPanel(wxString const& imageFilePath) {
@@ -211,13 +354,15 @@ BasePanel* ImagePage::initializeMainPanel(wxString const& imageFilePath) {
 	);
 }
 
-ImagePage::ImagePage(wxWindow* parent, wxString imageFilePath) : BasePanel(parent) {
+ImagePage::ImagePage(wxWindow* parent, wxString imageFilePath)
+	: BasePanel(parent)
+{
 	wxFileName p(imageFilePath);
 	p.Normalize();
-	imageFilePath = p.GetAbsolutePath();
-	wxCommandEvent e(MainFrame_CHANGE_TITLE);
-	e.SetString(imageFilePath);
-	wxPostEvent(this, e);
+	m_imageFilePath = p.GetAbsolutePath();
+
+	Bind(ZOOM_FACTOR_CHANGED, &ImagePage::onZoomFactorChanged, this);
+
 	wxSizer* mainSizer = new wxBoxSizer(wxVERTICAL);
 
 	m_currentMainPanel = initializeMainPanel(imageFilePath);
@@ -232,4 +377,10 @@ ImagePage::ImagePage(wxWindow* parent, wxString imageFilePath) : BasePanel(paren
 
 void ImagePage::adjustDesiredSize() {
 	m_currentMainPanel->adjustDesiredSize();
+}
+
+void ImagePage::onZoomFactorChanged(wxCommandEvent& event) {
+	wxCommandEvent e(MainFrame_CHANGE_TITLE);
+	e.SetString(m_imageFilePath + wxString::Format(" (%d%%)", event.GetInt()));
+	wxPostEvent(this, e);
 }
