@@ -6,6 +6,11 @@ target_include_directories(glancer PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../include
 target_include_directories(glancer PRIVATE ${wxWidgets_SOURCE_DIR}/include)
 target_link_libraries(glancer PRIVATE wx::base wx::core)
 
+if (X11_FOUND)
+  target_include_directories(glancer PUBLIC ${X11_INCLUDE_DIR})
+  target_link_libraries(glancer PUBLIC ${X11_LIBRARIES})
+endif()
+
 set_target_properties(glancer PROPERTIES
     WIN32_EXECUTABLE ON
     MACOSX_BUNDLE ON

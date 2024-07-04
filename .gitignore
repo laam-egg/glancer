@@ -1,6 +1,12 @@
 .vs
 out
+lib
+
+# Windows
 bin/*.ilk
 bin/*.pdb
-bin/*.exe
-lib
+bin/glancer.exe
+# Linux
+bin/glancer
+# MacOS
+# ???

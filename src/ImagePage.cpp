@@ -39,14 +39,21 @@ public:
 	}
 };
 
-static float const MAX_ZOOM_FACTOR = 5.0f; // 500%
+wxDEFINE_EVENT(ZOOM_FACTOR_CHANGED, wxCommandEvent);
+
+constexpr float const MAX_ZOOM_FACTOR = 25.0f; // 500%
+constexpr float const MIN_ZOOM_FACTOR = 0.02f; // 2%
+
 class ImageZoomer {
 private:
+	wxWindow* const m_windowAgent;
+
 	bool m_autoSizing;
 
 	int const m_imageWidth, m_imageHeight;
 	double const m_imageWidthPerHeightRatio;
 	double m_imageSizePerWindowSizeRatio;
+	float m_currentZoomFactor;
 	wxSize m_minWindowSize;
 	wxSize m_minImageSize;
 	wxSize m_desiredWindowSize;
@@ -55,24 +62,38 @@ private:
 	wxPoint m_currentPosition;
 	wxPoint m_currentPositionDelta;
 
+	void onZoomFactorChanged() const {
+		if (m_windowAgent != nullptr) {
+			wxCommandEvent e(ZOOM_FACTOR_CHANGED);
+			e.SetInt(getCurrentZoomFactorByPercentage());
+			wxPostEvent(m_windowAgent, e);
+		}
+	}
+
 public:
-	ImageZoomer(int imageWidth, int imageHeight)
-		: m_autoSizing{ true },
+	/**
+	 * @param windowAgent The wxWindow that will be used for sending events,
+	 * especially the `ZOOM_FACTOR_CHANGED` events. This can be null, in
+	 * which case the events will never be fired.
+	 */
+	ImageZoomer(wxWindow* windowAgent, int imageWidth, int imageHeight)
+		: m_windowAgent{ windowAgent },
+		m_autoSizing{ true },
 		m_imageWidth{ imageWidth },
 		m_imageHeight{ imageHeight },
 		m_imageWidthPerHeightRatio{ 1.0 * m_imageWidth / m_imageHeight },
 		m_currentPositionDelta{ 0, 0 }
 	{
-		int const minWidth = 200; // the window should not be too small !
-		int const minHeight = minWidth / m_imageWidthPerHeightRatio;
+		int const minClientAreaWidth = 200; // the window should not be too small !
+		int const minClientAreaHeight = minClientAreaWidth / m_imageWidthPerHeightRatio;
 
 		int desiredWidth = wxMax(
 			wxMin(m_imageWidth, int(wxDisplay().GetGeometry().GetWidth() * 0.7)),
-			minWidth
+			minClientAreaWidth
 		);
 		int desiredHeight = wxMax(
 			wxMin(m_imageHeight, int(wxDisplay().GetGeometry().GetHeight()) * 0.8),
-			minHeight
+			minClientAreaHeight
 		);
 
 		double ratioDelta = 1.0 * desiredWidth / desiredHeight - m_imageWidthPerHeightRatio;
@@ -84,12 +105,16 @@ public:
 		}
 
 		m_imageSizePerWindowSizeRatio = 1.0 * m_imageWidth / desiredWidth;
-		m_minWindowSize = wxSize(minWidth, minHeight);
-		m_minImageSize = wxSize(minWidth * m_imageSizePerWindowSizeRatio, minHeight * m_imageSizePerWindowSizeRatio);
+		m_minWindowSize = wxSize(minClientAreaWidth, minClientAreaHeight);
+		m_minImageSize = wxSize(minClientAreaWidth * m_imageSizePerWindowSizeRatio, minClientAreaHeight * m_imageSizePerWindowSizeRatio);
 		m_desiredWindowSize = wxSize(desiredWidth, desiredHeight);
 		m_currentSize = m_desiredWindowSize;
 
 		m_currentPosition = { 0, 0 };
+
+		m_currentZoomFactor = 1.0f * m_currentSize.GetWidth() / m_imageWidth;
+
+		onZoomFactorChanged();
 	}
 
 	wxSize getMinWindowSize() const {
@@ -122,6 +147,8 @@ public:
 			}
 
 			m_currentSize = { newImageWidth, newImageHeight };
+			m_currentZoomFactor = 1.0f * newImageWidth / m_imageWidth;
+			onZoomFactorChanged();
 		}
 		m_currentPosition = {
 			wxCoord{ (newWindowSize.GetWidth() - m_currentSize.GetWidth()) / 2 + m_currentPositionDelta.x },
@@ -132,26 +159,48 @@ public:
 	void zoomBy(int numZoomSteps) {
 		m_autoSizing = false;
 
-		double const zoomPercentagePerStep = 0.05;
-		double factor = 1.0;
-		if (numZoomSteps > 0) {
-			factor = 1 + numZoomSteps * zoomPercentagePerStep;
-		}
-		else if (numZoomSteps < 0) {
-			factor = 1 + numZoomSteps * zoomPercentagePerStep;
+		constexpr float const zoomFactorIncrementPerStep = 0.01f;
+		float zoomFactorDelta = numZoomSteps * zoomFactorIncrementPerStep;
+		if (zoomFactorDelta == 0.0f) return;
+
+		m_currentZoomFactor += zoomFactorDelta;
+
+		int newWidth = wxMax(m_imageWidth * m_currentZoomFactor, m_minImageSize.GetWidth());
+		int newHeight;
+
+		if (m_currentZoomFactor > MAX_ZOOM_FACTOR) {
+			m_currentZoomFactor = MAX_ZOOM_FACTOR;
+			newWidth = m_imageWidth * MAX_ZOOM_FACTOR;
+			newHeight = m_imageHeight * MAX_ZOOM_FACTOR;
+		} else if (m_currentZoomFactor < MIN_ZOOM_FACTOR) {
+			m_currentZoomFactor = MIN_ZOOM_FACTOR;
+			newWidth = m_imageWidth * MIN_ZOOM_FACTOR;
+			newHeight = m_imageHeight * MIN_ZOOM_FACTOR;
+		} else {
+			if (newWidth == m_minImageSize.GetWidth()) {
+				newHeight = m_minImageSize.GetHeight();
+			} else {
+				newHeight = m_imageHeight * m_currentZoomFactor;
+			}
 		}
 
-		int newWidth = wxMax(m_currentSize.GetWidth() * factor, m_minImageSize.GetWidth());
-		int newHeight = wxMax(m_currentSize.GetHeight() * factor, m_minImageSize.GetHeight());
-
-		float currentZoomFactor = 1.0f * newHeight / m_imageHeight;
-		if (currentZoomFactor > MAX_ZOOM_FACTOR) {
-			currentZoomFactor = MAX_ZOOM_FACTOR;
-			newWidth = m_imageWidth * currentZoomFactor;
-			newHeight = m_imageHeight * currentZoomFactor;
+		if (zoomFactorDelta < 0.0f) {
+			// Zooming out
+			constexpr int const MIN_NUM_PIXELS = 50;
+			if ((newWidth < MIN_NUM_PIXELS || newHeight < MIN_NUM_PIXELS) && (newWidth <= m_imageWidth /*which implies newHeight <= m_imageHeight as well*/)) {
+				// Image is so small that even MIN_ZOOM_FACTOR
+				// cannot serve as a proper limit for zooming-out.
+				// Stop zooming out.
+				newWidth = m_imageWidth;
+				newHeight = m_imageHeight;
+				m_currentZoomFactor = 1.0f;
+				onZoomFactorChanged();
+				return;
+			}
 		}
 
 		m_currentSize = { newWidth, newHeight };
+		onZoomFactorChanged();
 	}
 
 	void move(wxPoint const& mouseMoveDelta, wxSize const& windowSize) {
@@ -159,8 +208,8 @@ public:
 		adapt(windowSize);
 	}
 
-	int getCurrentZoomFactorByPercentage() const {
-		return int(1.0f * m_currentSize.GetHeight() / m_imageHeight * 100);
+	inline int getCurrentZoomFactorByPercentage() const {
+		return int(m_currentZoomFactor * 100);
 	}
 };
 
@@ -241,10 +290,9 @@ private:
 	}
 };
 
-wxDEFINE_EVENT(ZOOM_FACTOR_CHANGED, wxCommandEvent);
-
 class RealImagePanel final : public BasePanel {
 private:
+	wxBitmap m_imageBitmap;
 	wxMemoryDC m_imageDC;
 	ImageZoomer m_iz;
 	MouseDragDetector m_mouseDragDetector;
@@ -252,8 +300,9 @@ private:
 public:
 	RealImagePanel(wxWindow* parent, wxImage const& image)
 		: BasePanel(parent),
-		m_imageDC(wxBitmap(image)),
-		m_iz(image.GetWidth(), image.GetHeight()),
+		m_imageBitmap(image),
+		m_imageDC(m_imageBitmap),
+		m_iz(this, image.GetWidth(), image.GetHeight()),
 		m_mouseDragDetector(this)
 	{
 		Bind(wxEVT_PAINT, &RealImagePanel::onPaintEvent, this);
@@ -292,10 +341,6 @@ public:
 		wxCoord newImageWidth{ m_iz.getCurrentSize().GetWidth() };
 		wxCoord newImageHeight{ m_iz.getCurrentSize().GetHeight() };
 
-		wxCommandEvent e(ZOOM_FACTOR_CHANGED);
-		e.SetInt(m_iz.getCurrentZoomFactorByPercentage());
-		wxPostEvent(this, e);
-
 		dc.StretchBlit(
 			m_iz.getCurrentPosition().x,
 			m_iz.getCurrentPosition().y,
@@ -311,7 +356,8 @@ public:
 
 	void onMouseWheel(wxMouseEvent& event) {
 		if (event.ControlDown()) {
-			int numZoomSteps = abs(event.GetWheelRotation()) / event.GetWheelRotation();
+			int rotation = event.GetWheelRotation();
+			int numZoomSteps = rotation == 0 ? 0 : (rotation > 0 ? 1 : -1);
 			m_iz.zoomBy(numZoomSteps);
 			Refresh(false);
 			return;
@@ -354,18 +400,18 @@ BasePanel* ImagePage::initializeMainPanel(wxString const& imageFilePath) {
 	);
 }
 
-ImagePage::ImagePage(wxWindow* parent, wxString imageFilePath)
+ImagePage::ImagePage(wxWindow* parent, wxString input_imageFilePath)
 	: BasePanel(parent)
 {
-	wxFileName p(imageFilePath);
-	p.Normalize();
+	wxFileName p(input_imageFilePath);
+	p.Normalize(wxPATH_NORM_DOTS | wxPATH_NORM_TILDE | wxPATH_NORM_ABSOLUTE | wxPATH_NORM_LONG | wxPATH_NORM_SHORTCUT);
 	m_imageFilePath = p.GetAbsolutePath();
 
 	Bind(ZOOM_FACTOR_CHANGED, &ImagePage::onZoomFactorChanged, this);
 
 	wxSizer* mainSizer = new wxBoxSizer(wxVERTICAL);
 
-	m_currentMainPanel = initializeMainPanel(imageFilePath);
+	m_currentMainPanel = initializeMainPanel(m_imageFilePath);
 
 	{
 		{
@@ -381,6 +427,6 @@ void ImagePage::adjustDesiredSize() {
 
 void ImagePage::onZoomFactorChanged(wxCommandEvent& event) {
 	wxCommandEvent e(MainFrame_CHANGE_TITLE);
-	e.SetString(m_imageFilePath + wxString::Format(" (%d%%)", event.GetInt()));
+	e.SetString(wxString::Format("(%d%%) ", event.GetInt()) + m_imageFilePath);
 	wxPostEvent(this, e);
 }

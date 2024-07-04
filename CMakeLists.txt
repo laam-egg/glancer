@@ -19,6 +19,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(wxWidgets_USE_STATIC 1)
 set(wxBUILD_SHARED OFF)
 
+find_package(X11 REQUIRED)
+
 include(FetchContent)
 FetchContent_Declare(
    wxWidgets
